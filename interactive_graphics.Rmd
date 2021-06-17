@@ -1,0 +1,279 @@
+---
+title: "TCO interactive viz"
+date: 11-11-2020
+output: html_notebook
+editor_options: 
+  chunk_output_type: console
+---
+This is supposed to be a quick-and-dirty interactive graphic of TCO over time, with sliders to control key parameters
+```{r}
+library(ggplot2) # good plotting
+library(dplyr) # manipulate tbls
+library(readr) # read_csv
+library(tidyr) # pivoting
+library(manipulate) # interactive graphs
+library(pals) # better color palettes
+```
+
+Load and clean up components from literature
+```{r}
+components.tbl <- read_csv('/Users/maita.schade/Documents/Work/Database collection/tco_cost_components.csv')
+```
+Currency
+```{r}
+usd.eur.conv.tbl <- tibble(year=c(2017,2018),usd.eur.conv=c(1.13,1.18))
+components.tbl %>%
+  left_join(usd.eur.conv.tbl, by=c("currency.year"="year")) %>%
+  mutate(value = (if_else(is.na(value.eur), value.usd*usd.eur.conv, value.eur))) %>%
+  select(-c(value.usd,value.eur,currency,usd.eur.conv)) ->
+  components.tbl.eur
+```
+
+Other fixes
+```{r}
+components.tbl.eur %>%
+  pivot_wider(names_from = cost.component, values_from = value) %>%
+  mutate(deprec.tot = if_else(is.na(purchase.tot)|is.na(resale.tot), deprec.tot, purchase.tot-resale.tot)) %>%
+  mutate(resale.tot = if_else(is.na(purchase.tot)|is.na(deprec.tot), resale.tot, purchase.tot-deprec.tot)) %>%
+  mutate(annual.overhead = annual.overhead.tot / ownership.years, annual.overhead.tot = NULL) %>%
+  pivot_longer(c(annual.overhead, battery, deprec.tot, driving.tot, financing, propellant, purchase.tot, resale.tot, subsidy.pos, variable.misc.tot, range.comp), 
+                 values_drop_na = T, names_to = "cost.component") ->
+  components.tbl.eur.cleaner
+```
+
+Analyze individual components
+```{r,  fig.width=10,fig.height=10}
+components.tbl.eur %>% distinct(cost.component)
+components.tbl.eur.cleaner %>%
+  ggplot(aes(x=value.year, y=value)) + 
+    geom_point() +
+    scale_color_manual(values=glasbey()) +
+    facet_grid(cols = vars(engine.type), rows = vars(cost.component))
+```
+
+### inputs
+km.yr #constant
+p.eur.L # constant--1.20-1.70
+d.eur.L # constant--1.00-1.50
+e.eur.kwh # constant--
+batt.eur.kwh.exp
+kwh
+subsidy
+deprec.perc
+margin
+ownership.yrs
+ 
+### model
+```
+purchase.tot.e_slider * yr * (1-exp(deprec.factor_slider*ownership.yrs_slider)) [SEPARATE slider for purchase price dev e,p,d]+ 
+(subsidy.pos_slider) + 
+(km.yr_slider * ownership.yrs_slider * e.eur.kwh_slider * kwh.km) [OR p/d equivalent] +
+annual.overhead_slider*annual.overhead.factor * ownership.yrs
+
+```
+
+```{r}
+x <- seq(1,100)
+a <- 5
+plot(x, 50000*exp(-0.3*x))
+```
+
+Get linear fits to some of these
+
+```{r fig.width=10,fig.height=12}
+
+components.tbl.eur.cleaner %>%
+  ggplot(aes(x=value.year, y=value)) + 
+    geom_point() +
+    scale_color_manual(values=glasbey()) +
+    facet_grid(cols = vars(engine.type), rows = vars(cost.component)) +
+  geom_smooth(method = "lm")
+```
+
+```{r}
+library(broom)
+library(tidyverse)
+components.tbl.eur.cleaner %>%
+  nest(-engine.type, -cost.component) %>%
+  mutate(fit = map(data, ~ lm("value ~ value.year", .)),
+         results = map(fit, tidy)) %>%
+  unnest(results) %>%
+  select(engine.type, cost.component, term, estimate, std.error)
+
+```
+```{r}
+library(broom)
+library(tidyverse)
+components.tbl.eur.cleaner %>%
+  nest(-engine.type, -cost.component) %>%
+  mutate(fit = map(data, ~ lm("value ~ 1", .)),
+         results = map(fit, tidy)) %>%
+  unnest(results) %>%
+  select(engine.type, cost.component, term, estimate, std.error) %>%
+  filter(cost.component=="annual.overhead") ->
+  annual.overhead.estimates
+
+annual.overhead.estimates %>%
+  mutate(overhead.factor = estimate/filter(annual.overhead.estimates, engine.type=="bev")$estimate) %>%
+  select(engine.type, overhead.factor)
+```
+
+
+```{r}
+glance(lm(value ~ value.year, components.tbl.eur.cleaner))
+```
+
+
+
+
+```{r}
+# $/kWh
+cost.tbl <- tibble(year=c(2010:2030), cost=1000)
+```
+Test manipulate
+```{r, R.options=list(chunk_output_type="console")}
+# install.packages("manipulate")
+library(manipulate)
+# run this to deactivate manipulate bug
+# manipulate(plot(1:5, cex=size), size = slider(0.5,10,step=0.5))
+manipulate(
+  {ggplot(cost.tbl, aes(year, 1000*exp(coeff*(year-2010)) - subv)) +
+   geom_line() + ylim(0,1000)},
+  coeff = slider(-0.3, 0),
+  subv = slider(0, 100)
+)
+```
+Build a manipulable table and plot
+```
+DEPRECIATION = (purchase.tot.e.0 - purchase.tot.e_slider * yr) * (1-exp(deprec.factor_slider*ownership.yrs_slider)) [SEPARATE slider for purchase price dev e,p,d]+ 
+SUBSIDY = (subsidy.pos_slider) + 
+DRIVING = (km.yr_slider * ownership.yrs_slider * e.eur.kwh_slider * kwh.km) [OR p/d equivalent] +
+OTHER FIXED = annual.overhead_slider*annual.overhead.factor * ownership.yrs
+```
+
+
+```{r}
+plotTableF <- function(purchase.tot.bev = 2000, 
+                       purchase.tot.diesel = 1000, 
+                       purchase.tot.petrol = 1000, 
+                       deprec.factor = -0.3, 
+                       ownership.yrs= 8, 
+                       subsidy.pos = 4000, 
+                       km.yr = 15000, 
+                       e.eur.kwh = 0.3, 
+                       petrol.eur.L = 1.5, 
+                       diesel.eur.L = 1, 
+                       kwh.km = 0.189, 
+                       petrol.L.km = 0.08, 
+                       diesel.L.km = 0.07,
+                       annual.overhead = 810){
+  plotting.tbl <- expand_grid(year = seq(2015, 2030), engine.type = c("bev","diesel","petrol"))
+  plotting.tbl %>%
+    mutate(Subsidy = if_else(engine.type=="bev", -subsidy.pos, NULL)) %>%
+    mutate(Depreciation = if_else(engine.type=="bev", (50000-purchase.tot.bev*(year-2015) + Subsidy)*(1-exp(deprec.factor*ownership.yrs)),
+           if_else(engine.type=="petrol", (38000-purchase.tot.petrol*(year-2015))*(1-exp(deprec.factor*ownership.yrs)),
+                   if_else(engine.type=="diesel",(38000-purchase.tot.diesel*(year-2015))*(1-exp(deprec.factor*ownership.yrs)),NULL)
+                   ))) %>%
+    mutate(Driving = if_else(engine.type=="bev", km.yr * ownership.yrs * e.eur.kwh * kwh.km,
+           if_else(engine.type=="petrol", km.yr * ownership.yrs * petrol.eur.L * petrol.L.km,
+                   if_else(engine.type=="diesel", km.yr * ownership.yrs * diesel.eur.L * diesel.L.km, NULL)
+                   ))) %>%
+    mutate(Fixed = if_else(engine.type=="bev", annual.overhead * ownership.yrs,
+           if_else(engine.type=="petrol", annual.overhead * 1.203294 * ownership.yrs,
+                   if_else(engine.type=="diesel", annual.overhead * 1.044825 * ownership.yrs, NULL)
+                   ))) %>%
+   pivot_longer(c(Depreciation, Subsidy, Driving, Fixed), 
+                 values_drop_na = T, names_to = "cost.component")
+}
+
+test.tbl <- plotTableF()
+
+ggplot(test.tbl, aes(x = engine.type, y = value, fill=cost.component)) +
+  geom_col(position = "stack") + 
+  facet_grid(cols=vars(year)) +
+  theme(axis.text.x = element_text(angle = 90))
+```
+```{r}
+manipulate(
+  {ggplot(cost.tbl, aes(year, 1000*exp(coeff*(year-2010)) - subv)) +
+   geom_line() + ylim(0,1000)},
+  coeff = slider(-0.3, 0),
+  subv = slider(0, 100)
+)
+manipulate(
+  {ggplot(plotTableF(purchase.tot.bev = purchase.tot.bev), aes(x = engine.type, y = value, fill=cost.component)) +
+      geom_col(position = "stack")
+      # facet_grid(cols=vars(year)) +
+      # ylab("TCO") +
+      # theme(axis.text.x = element_text(angle = 90))
+    },
+  purchase.tot.bev = slider(0,3000,initial = 2000) 
+  
+)
+```
+Schönere Farben...
+Agora Farben
+```{r}
+agora.cols.prim.str <- c("29 / 74 / 98",
+                         "0 / 72 / 153",
+                         "0 / 106 / 171",
+                         "123 / 192 / 188")
+agora.cols.1.str <- c("162 / 140 / 171",
+                      "50 / 33 / 64",
+                      "62 / 163 / 220",
+                      "42 / 106 / 178",
+                      "244 / 221 / 197")
+agora.cols.2.str <- c("138 / 170 / 164",
+                      "230 / 231 / 226",
+                      "214 / 217 / 190",
+                      "239 / 228 / 141",
+                      "169 / 157 / 110")
+agora.cols.3.str <- c("65 / 61 / 73",
+                      "45 / 118 / 102",
+                      "86 / 162 / 77",
+                      "124 / 167 / 171",
+                      "207 / 178 / 71",
+                      "239 / 228 / 141")
+rgb2hex <- function(x){rgb(x[1],x[2],x[3], maxColorValue = 255)}
+
+agora.cols.prim <- sapply(strsplit(agora.cols.prim.str," / "), rgb2hex)
+agora.cols.1 <- sapply(strsplit(agora.cols.1.str," / "), rgb2hex)
+agora.cols.2 <- sapply(strsplit(agora.cols.2.str," / "), rgb2hex)
+agora.cols.3 <- sapply(strsplit(agora.cols.3.str," / "), rgb2hex)
+```
+
+```{r}
+manipulate(
+  {ggplot(plotTableF(purchase.tot.bev = purchase.tot.bev, 
+                       purchase.tot.diesel = purchase.tot.diesel, 
+                       purchase.tot.petrol = purchase.tot.petrol, 
+                       deprec.factor = deprec.factor, 
+                       ownership.yrs= ownership.yrs, 
+                       subsidy.pos = subsidy.pos, 
+                       km.yr = km.yr, 
+                       e.eur.kwh = e.eur.kwh , 
+                       petrol.eur.L = petrol.eur.L,
+                       diesel.eur.L = diesel.eur.L, 
+                       annual.overhead = annual.overhead), aes(x = engine.type, y = value, fill=cost.component)) +
+      scale_fill_manual(values = agora.cols.1) +
+      geom_col(position = "stack") + 
+      facet_grid(cols=vars(year)) +
+      ylab("TCO (Eur)") +
+      theme(axis.text.x = element_text(angle = 90))},
+  purchase.tot.bev = slider(0,3000,initial = 2000,label = "BEV change in purchase price (Eur/yr)"), 
+  purchase.tot.diesel = slider(0,3000,initial = 1000,label = "Diesel change in purchase price (Eur/yr)"), 
+  purchase.tot.petrol = slider(0, 3000,initial = 1000,label = "Petrol change in purchase price (Eur/yr)"), 
+  deprec.factor = slider(-0.5,0,initial = -0.3 ,label = "Depreciation factor (yrs^(-1))"), 
+  ownership.yrs= slider(0,15,initial = 8,label = "Duration of ownership (yrs)"), 
+  subsidy.pos = slider(0, 10000,initial = 4000,label = "Point of sale subsidy (Eur)"), 
+  km.yr = slider(10000,40000,initial = 15000,label = "Distance driven (km/yr)"), 
+  e.eur.kwh = slider(0,1,initial = 0.3,label = "Price of electricity (Eur/kWh)"), 
+  petrol.eur.L = slider(0.0,3.0,initial = 1.28,label = "Price of petrol (Eur/L)", step = 0.01), 
+  diesel.eur.L = slider(0,3,initial = 1.02,label = "Price of diesel (Eur/L)", step = 0.01), 
+  annual.overhead =slider(0,1500,initial = 810,label = "Other annual fixed costs (maintenance, insurance etc.; Eur)")
+)
+
+```
+
+
+

@@ -1,0 +1,100 @@
+---
+title: "Histogramm Emissionsklassen"
+output: html_notebook
+---
+```{r}
+library(dplyr)
+library(tidyr)
+library(ggplot2)
+source("eeaGet.R")
+source("~/Nextcloud/Documents/Work/agora_colors.R")
+```
+
+
+```{r}
+queryDistinct("Ewltp (g/km)")
+```
+
+Retrieve my values
+
+```{r}
+GET("https://discodata.eea.europa.eu/sql",
+                      query = list(query="SELECT [Ewltp (g/km)] wltp_val, year, 
+                      SUM(CAST([Ewltp (g/km)] AS FLOAT)) wltp_tot,
+                SUM(r) n_total
+                FROM [CO2Emission].[latest].[co2cars]
+                GROUP BY year, [Ewltp (g/km)]")) %>%
+  content(as="parsed") %>%
+  (function(x){x$results}) %>%
+  spread_all -> 
+wltp.vals
+
+
+
+```
+```{r,fig.width = 9, fig.height = 5}
+wltp.vals %>%
+  filter(year==2019 & !is.na(wltp_tot)) %>%
+  summarize(wltp = sum(wltp_tot), n = sum(n_total)) %>%
+  mutate(ave.em = wltp/n) %>%
+  pull(ave.em) -> 
+ave.em
+
+  
+wltp.vals %>%
+  filter(year==2019) %>%
+  filter(!is.na(wltp_val)) %>%
+  arrange(wltp_val) %>%
+  mutate(p.cum = cumsum(n_total)/sum(n_total)*100,
+         wltp.ave.cum = cumsum(wltp_tot)/cumsum(n_total)) %>%
+  rename(wltp.val = wltp_val) ->
+wltp.vals.cum
+
+wltp.vals.cum %>% 
+  filter(wltp.val<ave.em) %>% 
+  pull(p.cum) %>% max -> 
+  fraction.below
+  
+wltp.vals.cum %>%
+  pivot_longer(cols = c(wltp.val, wltp.ave.cum)) %>%
+  ggplot() +
+    geom_line(aes(x=p.cum, y=value, color=name), size=1) +
+    scale_color_manual(labels = c("Kumulativer Durchschnitt", "Je Fahrzeug"), values = c(agora.cols.prim[3:4])) +
+    geom_hline(yintercept = ave.em, linetype="dashed", color="darkgrey") +
+    geom_vline(xintercept = fraction.below, linetype="dashed", color="darkgrey") +
+    geom_text(aes(x=fraction.below, y=ave.em), 
+              label=paste0("Gesamtflottendurchschnitt =\n", format(ave.em, digits=4), " g/km"),
+              color="darkgrey",
+              nudge_x= -25, nudge_y = 50)+
+    theme_minimal() +
+    theme(plot.margin = margin(15,20,7,7))+
+    xlab("Flottenanteil (%)") +
+    ylab(bquote(~CO[2]~ (g/km))) +
+    labs(color=bquote(~CO[2]~"-Emissionen")) +
+    ggtitle(bquote(~CO[2]~"-Emissionen aller in der EU verkauften Fahrzeuge (2019, EEA)"))
+  
+ggsave("./out/kumulativer_durchschnitt.pdf")
+  
+  
+  #  mutate(bin = cut(wltp_val,bins)) %>%
+  # group_by(bin) %>%
+  # summarize(wltp.tot = sum(wltp_tot),
+  #           n.tot = sum(n_total),
+  #           bin.n = mean(min(wltp_val), max(wltp_val))) %>%
+  # ungroup()%>%
+  # arrange(bin.n) %>%
+  # ggplot(aes(x=bin.n)) +
+  #   geom_col(aes(y=n.tot), color = agora.cols.prim[4]) +
+  #   geom_line(aes(y=cumsum(wltp.tot)/cumsum(n.tot), group = 1),geom = "line", color = agora.cols.prim[2], guide="legend") +
+  #   #geom_line(aes(y=cumsum(n.tot)*ave.em, group = 1),geom = "line", color = agora.cols.prim[4]) +
+  #   geom_vline(xintercept = ave.em, color="red") +
+  #   scale_y_continuous(
+  #     # Features of the first axis
+  #     name = "Cumulative Emissions",
+  #     # Add a second axis and specify its features
+  #     sec.axis = sec_axis(~./ave.em, name="Number of Vehicles")
+  #   )  +
+  #   scale_x_continuous(name="WLTP value")
+
+```
+

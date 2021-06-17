@@ -1,0 +1,35 @@
+0. General observations
+
+As electrification progresses, *standards should be based on energy efficiency rather than tailpipe CO2 emissions*, in order to 1. address the imbalance between electric and combustion cars and 2. ensure that all vehicle types improve over time. As such a fundamental adjustment to standards may be out of scope given the short timeframe, we suggest targeting two main areas for the impact assessment as follows.
+
+I. Supplementary standards for ICEV given rising percentage of ZLEV
+
+Rising shares of ZLEV in manufacturers’ fleets lead to rising allowable CO2 emission level for the remainder of the fleet (the ICEV), until, at some point, the fleet limit value no longer constrains emission levels of ICEV.[1] This effect can be controlled with supplementary limit values (LV) for ICEV in addition to a fleet LV curve.
+Two possible options for supplementary LV could be:
+
+a. *Backstop LV curve* related to the existing one but applied to ICEV only 
+- The advantage of this approach is its continuation of the established format of an LV curve 
+- The curve could be determined in different ways, with distinct distributional impacts requiring further investigation. Examples include:
+	- Multiplier applied to the existing LV curve, to meet 2021 average value for ICEV
+	- Parallel shift of the existing LV curve, to meet 2021 average value for combustion cars
+	- Trend curve based on ICEV registered in 2021
+
+b. *Backstop LV specific to manufacturers*, for example:
+- Based on their 2021 average WLTP levels
+	- Main advantages here are simplicity and relative resilience to manipulation of baseline values, since product plans for 2021 are largely finalized
+- Or starting at 2021 values and adding a default improvement rate (e.g. 1% per year) for the following years
+	- This would incentivize low-cost options to improve ICEV, without requiring significant further development efforts. Such a default improvement rate must be kept modest, so as not to interfere with the main objective of electrification 
+
+Moreover, the ZLEV incentive mechanism—in particular for PHEV, which often have higher real emissions than their lab results—should be abandoned: with EV becoming competitive on their own, such mechanisms may eventually slow down rather than accelerate market uptake.
+
+II. Separate standards for fuels and vehicles
+
+Some stakeholders have called for the inclusion of fuel credits in emissions standards. We strongly advise against this approach, for the following reasons:
+- *Loss of efficacy* as a result of commingling regulatory spheres: fleet standards have had great success improving vehicle technology, while fuels would generally be regulated by energy legislation. Commingling regulation in both of these areas creates the risk of confining future improvements to just one of the two sectors 
+	- Such overflow effects could include *adverse impacts* on 1. *fuel policy* (biofuels) or 2. the *achievement of ESR targets*
+- *Higher costs*: where fleet standards on the whole reduce costs through lower fuel consumption over the lifetime of a vehicle, synthetic fuels would increase the cost to end consumers as well as society as a whole
+- *Loss of transparency and credibility*: if ICE with compensatory synthetic fuel production are sold as ZLEV, especially if they receive related benefits, this is likely to further undermine consumer trust
+
+We look forward to submitting more detailed inputs as the impact assessment proceeds.
+
+[1] https://www.agora-verkehrswende.de/en/blog/making-the-car-co2-standards-fit-for-the-electric-age/

@@ -1,0 +1,173 @@
+---
+title: "EEA Effizienzwerte"
+output: html_notebook
+---
+
+Load libraries...
+```{r}
+library(httr)
+library(tidyjson)
+library(readr)
+library(dplyr)
+library(tidyr)
+source("C://Users/maita.schade/Documents/Work/agora_colors.R")
+```
+
+EEA-specific helper functions...
+```{r}
+eeaCleanNames <- function(df){ # just a function to rewrite some of these names
+  df %>%
+    mutate(name = toupper(Mh)) %>%
+    mutate(name = str_replace(name, "GENERAL MOTORS?", "GM")) %>%
+    mutate(name = str_replace(name, "LAND ROVER","LAND-ROVER")) %>%
+    mutate(name = str_replace(name, "-WERKE|-AMG","")) %>%
+    mutate(name = str_replace(name, "ROLLS ROYCE","ROLLS-ROYCE")) %>%
+    mutate(name = str_replace(name, "VEHICULES ELECTRIQUES PININFARINA-BOLLORE","PININFARINA-BOLLORE")) %>% 
+    mutate(name = str_replace(name, "UNKNWON","UNKNOWN")) %>%
+    mutate(name = str_replace(name, "GREAT WALL","GREAT-WALL")) %>%
+    mutate(name = str_replace(name, "SHANGHAI MAPLE","MAPLE")) %>%
+    mutate(name = str_replace(name, "^ROVER","TATA")) %>%
+    mutate(name = str_replace(name, "AUTOMOBILES?\\s?","")) %>%
+    mutate(name = str_replace(name, "MOTOR CORPORATION\\s?","")) %>%
+    mutate(name = str_replace(name, "(GENERAL )MOTOR COMPANY\\s?","")) %>%
+    mutate(name = str_replace(name, "MOTORS?\\s?","")) %>%
+    mutate(name = if_else(str_detect(Mh, "SHUANGHUAN"), "SHUANGHUAN", name)) %>%
+    mutate(name = if_else(str_detect(Mh, "BAYERISCHE MOTOREN WERKE AG"), "BMW", name)) %>%
+    mutate(first = str_extract(name, "(^[^\\s]*)(\\s|$)")) %>%
+    mutate(first = str_squish(str_trim(first))) %>%
+    mutate(man.name.clean = first, first = NULL, name = NULL) 
+}
+
+eeaRegroupByCleanNames <- function(df){
+  df %>% # renamed cleanly
+    group_by(man.name.clean, year) %>%
+    summarise(mass_avg = weighted.mean(mass_avg, n_sales), # and then re-group and re-summarize according to the new names
+              wltp_avg = weighted.mean(wltp_avg, n_sales),
+              enedc_avg = weighted.mean(enedc_avg, n_sales),
+              n_sales = sum(n_sales)) %>%
+    ungroup
+}
+
+eeaGet <- function(query){
+  # function that
+  # a) catches and prints query for faulty queries and
+  # b) unpacks the tbl.json if the query goes ok
+  res <- tryCatch(GET("https://discodata.eea.europa.eu/sql",
+                        query = list(query=query)),
+    error = function(e){print(paste("problem retrieving",query))})
+  if(!is.null(res)){
+    res %>%
+      content(as="parsed") %>%
+      (function(x){x$results}) %>%
+      spread_all %>%
+      as.data.frame %>%
+      select(-..JSON) %>%
+      as.tbl %>%
+      return}
+}
+```
+
+```{r}
+(eeaGet("SELECT DISTINCT(Ft) FROM [CO2Emission].[latest].[co2cars] WHERE year > 2016")) %>% 
+  distinct(Ft) %>% 
+  pull(Ft) %>%
+  str_to_title
+```
+Add harmonizing Ft to these
+```{r}
+ft.replacements <- c("Lpg" = "LPG" ,
+  "Ng" = "NG",
+  "Ng-Biomethane" = "NG",
+  "E85" = "Petrol",
+  "Other" = NA_character_,
+  "Unknown" = NA_character_)
+```
+
+
+Conversion factors from IPCC 2006 -- clean up for combination with EEA fuel type. *No entry for Hydrogen.*
+```{r}
+"Petrol 69 300 67 500 73 000
+Diesel 74 100 72 600 74 800
+LPG 63 100 61 600 65 600
+Kerosene 71 900 70 800 73 700
+Lubricants 73 300 71 900 75 200
+NG 56 100 54 300 58 300" %>%
+  str_split("\\n") %>%
+  unlist %>%
+  sapply(str_split, " ") %>%
+  # t %>%
+  data.frame %>%
+  t %>% data.frame %>%
+  mutate(Ft = X1, kg.tj.ipcc = as.numeric(paste0(X2, X3))) %>%
+  select(Ft, kg.tj.ipcc) ->
+  ipcc.factors
+```
+
+Similar from DEKRA (https://www.dekra.de/de/umwelt-und-co2/) und EU-Normen (RED 2, Annex 3):
+```{r}
+read_csv("doc/energie_emissionen_gh.csv") %>%
+  rename(Ft = `Benzin und Diesel`) %>%
+  mutate(kg.mj.dekra = as.numeric(`CO2-Produktion bei Verbrennung`)/as.numeric(`Spezifische Energie`)) %>%
+  select(Ft, kg.mj.dekra) ->
+  dekra.factors
+```
+
+
+Get CO2 and numbers data by year and fuel type. 
+```{r}
+res.tbl <- eeaGet("SELECT year, Ft, 
+                         SUM(CAST([z (Wh/km)] AS FLOAT) * r) / SUM(r) z_avg, 
+                         SUM(CAST([Enedc (g/km)] AS FLOAT) * r) / SUM(r) nedc_avg, 
+                         SUM(CAST([Ewltp (g/km)] AS FLOAT) * r) / SUM(r) wltp_avg, 
+                         SUM(r) total
+                  FROM [CO2Emission].[latest].[co2cars]
+                  WHERE year > 2016
+                  GROUP BY year, Ft")
+```
+
+
+```{r}
+res.tbl %>%
+  mutate(Ft = recode(str_to_title(Ft), !!!ft.replacements))
+
+res.tbl %>%
+  mutate(Ft= na_if(recode(str_to_title(Ft), !!!ft.replacements),
+                          "")) %>%
+  mutate(Ft = replace_na(Ft, "NA")) %>%
+  group_by(year, Ft) %>%
+  summarize(z_avg = weighted.mean(z_avg,total),
+            nedc_avg = weighted.mean(nedc_avg, total),
+            wltp_avg = weighted.mean(wltp_avg, total),
+            total = sum(total)) %>%
+  left_join(ipcc.factors) %>%
+  mutate(eff.nedc.mj = nedc_avg/kg.tj.ipcc*1000, #MJ/km
+         eff.wltp.mj = wltp_avg/kg.tj.ipcc*1000,
+         eff.nedc.wh = eff.nedc.mj/3.6*1000, #Wh/km
+         eff.wltp.wh = eff.wltp.mj/3.6*1000
+         ) %>% #Wh/km
+  left_join(dekra.factors) %>%
+  mutate(eff.nedc.mj.dekra = nedc_avg/kg.mj.dekra/1000,
+         eff.wltp.mj.dekra = wltp_avg/kg.mj.dekra/1000) ->
+eff.table
+```
+
+Can we visualize this usefully?
+```{r}
+ggplot() +
+  geom_point(data=eff.table, aes(x=year, color=Ft, y=eff.nedc.wh)) + 
+  geom_line(data=eff.table, aes(x=year, color=Ft, y=eff.nedc.wh)) +
+  geom_point(data=filter(eff.table, !Ft%in%ipcc.factors$Ft), aes(x=year, color=Ft, y=z_avg)) + 
+  geom_line(data=filter(eff.table, !Ft%in%ipcc.factors$Ft), aes(x=year, color=Ft, y=z_avg)) +
+  scale_color_manual(values = c(agora.cols.1, agora.cols.3))
+
+
+```
+
+
+Are the DEKRA values similar?
+```{r}
+eff.table %>%
+  left_join(dekra.factors) %>%
+  
+```
+

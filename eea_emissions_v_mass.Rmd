@@ -1,0 +1,177 @@
+---
+title: "Emissions v Mass from EEA"
+output: html_notebook
+---
+
+```{r}
+knitr::opts_chunk$set(results='hide', message=FALSE, warning=FALSE)
+```
+
+Load libraries...
+```{r, echo=F}
+library(httr)
+library(tidyjson)
+library(dplyr) # mutating etc.
+library(stringr) # manipulating e.g. manufacturer names
+library(tidyr) # for lm fits to go with faceted graphs
+library(purrr) # for lm fits to go with faceted graphs
+library(broom) # for lm fits to go with faceted graphs
+library(plotly) # for zoomable/interactive graphics; includes ggplot
+```
+
+Function to get EEA data...
+```{r, results='hide', message=FALSE, warning=FALSE}
+eeaGet <- function(query){
+  tryCatch(return({
+    GET("https://discodata.eea.europa.eu/sql",
+                        query = list(query=query))%>%
+    content(as="parsed") %>%
+    (function(x){x$results}) %>%
+    spread_all
+  }), error = function(e){print(paste("problem retrieving",query))})
+}
+```
+
+Functions to clean up the harmonized manufacturer names...
+```{r, results='hide', message=FALSE, warning=FALSE}
+eeaCleanNames <- function(df){ # just a function to rewrite some of these names
+  df %>%
+    mutate(name = toupper(Mh)) %>%
+    mutate(name = str_replace(name, "GENERAL MOTORS?", "GM")) %>%
+    mutate(name = str_replace(name, "LAND ROVER","LAND-ROVER")) %>%
+    mutate(name = str_replace(name, "-WERKE|-AMG","")) %>%
+    mutate(name = str_replace(name, "ROLLS ROYCE","ROLLS-ROYCE")) %>%
+    mutate(name = str_replace(name, "VEHICULES ELECTRIQUES PININFARINA-BOLLORE","PININFARINA-BOLLORE")) %>% 
+    mutate(name = str_replace(name, "UNKNWON","UNKNOWN")) %>%
+    mutate(name = str_replace(name, "GREAT WALL","GREAT-WALL")) %>%
+    mutate(name = str_replace(name, "SHANGHAI MAPLE","MAPLE")) %>%
+    mutate(name = str_replace(name, "^ROVER","TATA")) %>%
+    mutate(name = str_replace(name, "AUTOMOBILES?\\s?","")) %>%
+    mutate(name = str_replace(name, "MOTOR CORPORATION\\s?","")) %>%
+    mutate(name = str_replace(name, "(GENERAL )MOTOR COMPANY\\s?","")) %>%
+    mutate(name = str_replace(name, "MOTORS?\\s?","")) %>%
+    mutate(name = if_else(str_detect(Mh, "SHUANGHUAN"), "SHUANGHUAN", name)) %>%
+    mutate(name = if_else(str_detect(Mh, "BAYERISCHE MOTOREN WERKE AG"), "BMW", name)) %>%
+    mutate(first = str_extract(name, "(^[^\\s]*)(\\s|$)")) %>%
+    mutate(first = str_squish(str_trim(first))) %>%
+    mutate(man.name.clean = first, first = NULL, name = NULL) 
+}
+
+eeaRegroupByCleanNames <- function(df){
+  df %>% # renamed cleanly
+    group_by(man.name.clean, year) %>%
+    summarise(mass_avg = weighted.mean(mass_avg, n_sales), # and then re-group and re-summarize according to the new names
+              wltp_avg = weighted.mean(wltp_avg, n_sales),
+              enedc_avg = weighted.mean(enedc_avg, n_sales),
+              n_sales = sum(n_sales)) %>%
+    ungroup
+}
+
+# looking at specific odd names
+# mass.tbl %>%
+#   filter(str_detect(Mh, "LIFAN"))
+```
+
+
+Functions to make the bubble graphs...
+```{r, results='hide', message=FALSE, warning=FALSE}
+eeaBubbleGraph <- function(df, x, y, title){ # we'd like to make bubble size a var as well, but it's complicated!
+
+    # first, the fit to be able to label them in the graphs: 
+  df %>%
+    nest(-year) %>% # fold everything by year
+    filter(year>2016) %>% # use only years after 2016, because no emissions data before then
+    mutate(fit = map(data, ~lm(paste(y,"~",x), data = ., weights = n_sales)),
+           results = map(fit, tidy)) %>% # fit and clean the fit for each year
+    unnest(results) %>% # unfold the fit results
+    pivot_wider(id_cols=c(year, data), values_from = estimate, names_from = term) %>% # make a column for each fit result of interest
+    rename(slope=mass_avg, intercept=`(Intercept)`) %>% # 
+    mutate(x_max = map(data, ~(max(.$mass_avg)))) %>% 
+    unnest(x_max) %>%
+    mutate(y_max = x_max*slope + intercept, x_max = x_max-100, man.name.clean = "name", mass_avg = 1, wltp_avg = 1, n_sales = 1) ->
+    emissions.ratio
+  
+  # then, make the actual plots:
+  fig <- (ggplot(filter(mass.tbl.clean, year>2016), aes_string(label="man.name.clean", x=x, y=y, size="n_sales")) +
+    facet_grid(cols = vars(year),drop = T) +
+    geom_point(alpha=0.5) +
+    ylab("Specific emissions fleet average (g/km)") +
+    xlab("Average vehicle mass (kg)") + 
+    labs(size = "Sales by manufacturer") +
+    ggtitle(title) +
+    geom_smooth(method = "lm", mapping = aes(weight = n_sales)) +
+    #stat_smooth(aes(outfit=fit<<-..y..))+
+    geom_text(data=emissions.ratio, aes(x=x_max, y=y_max, label=round(slope, digits = 3)), size=5, nudge_x = -100)) %>%
+    ggplotly %>%
+    layout(automargin=T) %>%
+    show
+}
+```
+
+### Getting the data
+
+"Mh" seems to have the fewest missing values, and also the fewest distinct categories, so lets use that one.
+We'll fetch _average mass_ and _average emissions_ by _year_ and _"harmonized manufacturer name" (Mh)_.
+
+
+Get aggregate European data...
+```{r, results='hide', message=FALSE, warning=FALSE}
+mass.tbl <- eeaGet("SELECT year, Mh, 
+                                          AVG(CAST([m (kg)] AS FLOAT)) mass_avg, 
+                                          AVG(CAST([Ewltp (g/km)] AS FLOAT)) wltp_avg,
+                                          AVG(CAST([Enedc (g/km)] AS FLOAT)) enedc_avg,
+                                          SUM(r) n_sales
+                      FROM [CO2Emission].[latest].[co2cars]
+                      GROUP BY year, Mh")
+```
+
+Clean up the European data...
+```{r, results='hide', message=FALSE, warning=FALSE}
+mass.tbl %>% 
+  eeaCleanNames %>%
+  eeaRegroupByCleanNames->
+mass.tbl.clean
+```
+
+Get data just for Germany, nicely grouped...
+```{r, results='hide', message=FALSE, warning=FALSE}
+mass.de.tbl <- eeaGet("SELECT year, Mh,
+AVG(CAST([m (kg)] AS FLOAT)) mass_avg, 
+AVG(CAST([Ewltp (g/km)] AS FLOAT)) wltp_avg,
+AVG(CAST([Enedc (g/km)] AS FLOAT)) enedc_avg,
+SUM(r) n_sales
+FROM [CO2Emission].[latest].[co2cars]
+WHERE MS='DE'
+GROUP BY year, Mh")
+```
+
+Clean up the German data...
+```{r, results='hide', message=FALSE, warning=FALSE}
+mass.de.tbl %>%
+  eeaCleanNames %>%
+  eeaRegroupByCleanNames ->
+  mass.de.tbl.clean
+```
+
+## Bubble graphs with weighted fits
+
+### Graphs for Europe
+
+First, WLTP vs. mass:
+```{r, results='hide', message=FALSE, warning=FALSE, fig.width=10, fig.height=5}
+eeaBubbleGraph(mass.tbl.clean, "mass_avg", "wltp_avg", "WLTP emissions v. mass (EU manufacturer fleet averages)")
+```
+Second, NEDC vs. mass:
+```{r, results='hide', message=FALSE, warning=FALSE, fig.width=10, fig.height=5}
+eeaBubbleGraph(mass.tbl.clean, "mass_avg", "enedc_avg", "NEDC emissions v. mass (EU manufacturer fleet averages)")
+```
+
+### Graphs for Germany
+First, WLTP vs. mass:
+```{r, results='hide', message=FALSE, warning=FALSE, fig.width=10, fig.height=5}
+eeaBubbleGraph(mass.de.tbl.clean, "mass_avg", "wltp_avg", "WLTP emissions v. mass (DE manufacturer fleet averages)")
+```
+Second, NEDC vs. mass:
+```{r, results='hide', message=FALSE, warning=FALSE, fig.width=10, fig.height=5}
+eeaBubbleGraph(mass.de.tbl.clean, "mass_avg", "enedc_avg", "NEDC emissions v. mass (DE manufacturer fleet averages)")
+```

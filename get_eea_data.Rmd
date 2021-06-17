@@ -1,0 +1,86 @@
+---
+title: "EEA data for Fanny"
+output: html_notebook
+---
+
+This is an [R Markdown](http://rmarkdown.rstudio.com) Notebook. When you execute code within the notebook, the results appear beneath the code. 
+
+Try executing this chunk by clicking the *Run* button within the chunk or by placing your cursor inside it and pressing *Ctrl+Shift+Enter*. 
+
+```{r}
+library(httr)
+library(tidyjson)
+library(readr)
+library(data.table)
+```
+What years exist in the database?
+```{r}
+GET("https://discodata.eea.europa.eu/sql",
+            query = list(query="SELECT DISTINCT year FROM [CO2Emission].[latest].[co2cars]")) %>%
+  content(as="parsed") %>%
+  (function(x){x$results}) %>%
+  spread_all
+```
+
+get sales by model
+
+```{r}
+sales.by.model <- GET("https://discodata.eea.europa.eu/sql",
+            query = list(query="SELECT Mh, Cn, Cr, Mk, MS, T, year, SUM(r) total
+            FROM [CO2Emission].[latest].[co2cars]
+                         GROUP BY Mh, Cn, Cr, Mk, MS, T, year"))%>%
+  content(as="parsed") %>%
+  (function(x){x$results}) %>%
+  spread_all
+
+summary(sales.by.model)
+```
+Fanny wants fuel info, too--get and write to disk
+```{r}
+sales.by.model.fuel <- GET("https://discodata.eea.europa.eu/sql",
+            query = list(query="SELECT Mh, Cn, Cr, Mk, MS, T, year, ft, fm, SUM(r) total
+            FROM [CO2Emission].[latest].[co2cars]
+                         GROUP BY Mh, Cn, Cr, Mk, MS, T, ft, fm, year"))%>%
+  content(as="parsed") %>%
+  (function(x){x$results}) %>%
+  spread_all
+
+# I need to get out of JSON world
+library(data.table)
+sales.dt <- as.data.table(sales.by.model.fuel) 
+sales.dt[,("..JSON"):=NULL]
+summary(sales.dt)
+# fwrite(sales.dt, "//192.168.90.30/Allmende Verkehr/4 Projekte/1 Projekte Verkehrswende/Paris für Automobilhersteller/02_Autohersteller/EEA/sales_by_model.csv")
+sales.dt <- fread("//192.168.90.30/Allmende Verkehr/4 Projekte/1 Projekte Verkehrswende/Paris für Automobilhersteller/02_Autohersteller/EEA/sales_by_model.csv")
+```
+See if I can get these to be more unique.
+How many categories does each have, anyways?
+```{r}
+varcounts <- sapply(names(sales.dt), function(x){sales.dt[,uniqueN(get(x))]})
+fwrite(as.data.table(varcounts,keep.rownames = T), "//192.168.90.30/Allmende Verkehr/4 Projekte/1 Projekte Verkehrswende/Paris für Automobilhersteller/02_Autohersteller/EEA/distinct_category_counts.csv")
+```
+And what are they?
+```{r}
+sales.dt[,uniqueN(Cn)]
+sales.dt[,uniqueN(trimws(Cn))]
+sales.dt[,uniqueN(tolower(Cn))]
+```
+We can get somewhere just by fixing case and whitespace. Do the simple fixes
+```{r}
+model.cols <- grep("document.id|total",names(sales.dt), value = T, invert = T)
+sales.dt[, 
+         (model.cols) := lapply(lapply(.SD, trimws), tolower),
+         .SDcols = model.cols]
+sales.dt.cleaner <- sales.dt[, .(total=sum(total)), by=model.cols]
+
+print(paste("Reduced entries by...", (nrow(sales.dt) - nrow(sales.dt.cleaner))/nrow(sales.dt)))
+fwrite(sales.dt.cleaner, "//192.168.90.30/Allmende Verkehr/4 Projekte/1 Projekte Verkehrswende/Paris für Automobilhersteller/02_Autohersteller/EEA/sales_by_model_cleaner.csv")
+```
+Try to get fuzzy
+```{r}
+#install.packages("sjmisc")
+install.packages("stringdist")
+library(sjmisc)
+sales.dt[,group_str(Cn)]
+```
+Can't do it easily given the current setup.
